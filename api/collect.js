@@ -11,9 +11,9 @@ const TARGET_STATIONS = {
 };
 
 const THEME_PATTERNS = [
-  /(?:今日|本日)?(?:の)?(?:メッセージ|メール|投稿)?テーマ\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
-  /(?:メッセージ|メール)募集\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
-  /(?:お題|募集テーマ)\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
+  /(?:(?:今日|本日|けさ|今朝)(?:の)?)?(?:メッセージ|メール|投稿)?テーマ\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
+  /(?:メッセージ|メール)募集\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
+  /(?:お題|募集テーマ)\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
 ];
 
 function todayJst() {
@@ -34,6 +34,15 @@ function extractTheme(...values) {
     if (theme.length >= 2 && theme.length <= 180) return theme;
   }
   return null;
+}
+function extractMessageUrl(...values) {
+  const text = values.filter(Boolean).join('\n');
+  const mailto = text.match(/mailto:([^\s"'<>]+)/i);
+  if (mailto) return `mailto:${mailto[1]}`;
+  const email = text.match(/(?<![\w.-])([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?![\w.-])/i);
+  if (email) return `mailto:${email[1]}`;
+  const form = text.match(/https?:\/\/[^\s"'<>]+/gi)?.find(url => /message|mail|form/i.test(url));
+  return form ?? null;
 }
 function radikoDateTime(value) {
   const s = String(value);
@@ -75,6 +84,7 @@ export default async function handler(req, res) {
           theme: extractTheme(title, desc, info),
           description: `${desc}${info ? `\n${info}` : ''}`.slice(0, 5000) || null,
           programUrl: clean(prog?.url) || null,
+          messageUrl: extractMessageUrl(desc, info),
           sourceUrl,
         });
       }
@@ -88,12 +98,12 @@ export default async function handler(req, res) {
           theme, description, program_url, message_url, source_url, fetched_at
         ) VALUES (
           ${p.broadcastDate}, ${p.stationId}, ${p.stationName}, ${p.programName}, ${p.startAt}, ${p.endAt},
-          ${p.theme}, ${p.description}, ${p.programUrl}, ${null}, ${p.sourceUrl}, NOW()
+          ${p.theme}, ${p.description}, ${p.programUrl}, ${p.messageUrl}, ${p.sourceUrl}, NOW()
         )
         ON CONFLICT (broadcast_date, station_id, start_at, program_name)
         DO UPDATE SET station_name=EXCLUDED.station_name, end_at=EXCLUDED.end_at,
           theme=EXCLUDED.theme, description=EXCLUDED.description, program_url=EXCLUDED.program_url,
-          source_url=EXCLUDED.source_url, fetched_at=NOW()
+          message_url=EXCLUDED.message_url, source_url=EXCLUDED.source_url, fetched_at=NOW()
       `;
     }
 
