@@ -6,7 +6,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,17 +25,15 @@ class StationSource:
 
 
 STATION_SOURCES = {
-    # TBSの週間番組表は当日テーマが薄いので、番組公式URLのクロールを主経路にする。
     "TBS": StationSource("TBS", "https://www.tbsradio.jp/timetable/", ("tbsradio.jp", "www.tbsradio.jp")),
     "QRR": StationSource("QRR", "https://www.joqr.co.jp/qr/dailyprogram/?date={date}", ("joqr.co.jp", "www.joqr.co.jp")),
     "LFR": StationSource("LFR", "https://www.1242.com/timetable/?target_date={date}", ("1242.com", "www.1242.com", "ssl.1242.com")),
     "FMT": StationSource("FMT", "https://www.tfm.co.jp/timetable/?date={date}", ("tfm.co.jp", "www.tfm.co.jp", "form.jfn.co.jp", "jfn.co.jp")),
-    # J-WAVEは番組別ページのINFORMATION / ARCHIVEが強い。
     "FMJ": StationSource("FMJ", None, ("j-wave.co.jp", "www.j-wave.co.jp")),
     "JORF": StationSource("JORF", "https://www.jorf.co.jp/timetable.php?date={date}", ("jorf.co.jp", "www.jorf.co.jp")),
 }
 
-USER_AGENT = "radio-mail-thema/0.4 (+https://github.com/take-code-0427/radio-mail-thema)"
+USER_AGENT = "radio-mail-thema/0.5 (+https://github.com/take-code-0427/radio-mail-thema)"
 
 
 def _base_program_name(value: str) -> str:
@@ -67,7 +65,7 @@ def _html_to_text(raw_html: str) -> str:
     return soup.get_text("\n", strip=True)
 
 
-def _program_window(page_text: str, program_name: str, radius: int = 1800) -> str | None:
+def _program_window(page_text: str, program_name: str, radius: int = 2200) -> str | None:
     base = _base_program_name(program_name)
     lines = [line.strip() for line in page_text.splitlines() if line.strip()]
     target = _norm(base)
@@ -87,8 +85,13 @@ def _program_window(page_text: str, program_name: str, radius: int = 1800) -> st
     if best_idx is None:
         return None
 
-    # HTMLの見た目上の「番組カード」を概ね1つ分に収める。
-    chunk = "\n".join(lines[max(0, best_idx - 4) : best_idx + 45])
+    end = min(len(lines), best_idx + 45)
+    time_heading = re.compile(r"^\d{1,2}:\d{2}\s*[-–ー〜~]\s*\d{1,2}:\d{2}$")
+    for idx in range(best_idx + 2, end):
+        if time_heading.match(lines[idx]):
+            end = idx
+            break
+    chunk = "\n".join(lines[max(0, best_idx - 4) : end])
     return chunk[:radius]
 
 
@@ -98,6 +101,10 @@ def _extract_message_link(raw_html: str, page_url: str) -> str | None:
     for a in soup.find_all("a", href=True):
         href = str(a.get("href") or "").strip()
         text = a.get_text(" ", strip=True)
+        if not href:
+            continue
+        if not href.startswith(("http://", "https://", "mailto:")):
+            href = urljoin(page_url, href)
         haystack = f"{text} {href}".lower()
         if href.startswith("mailto:"):
             candidates.append((100, href))
@@ -113,6 +120,31 @@ def _extract_message_link(raw_html: str, page_url: str) -> str | None:
         email = re.search(r"(?<![\w.-])([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?![\w.-])", soup.get_text(" ", strip=True), re.I)
         return f"mailto:{email.group(1)}" if email else None
     return max(candidates, key=lambda item: item[0])[1]
+
+
+def _candidate_detail_links(station_id: str, raw_html: str, page_url: str, yyyymmdd: str) -> list[str]:
+    soup = BeautifulSoup(raw_html, "html.parser")
+    mmdd = yyyymmdd[4:]
+    scored: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = urljoin(page_url, str(a.get("href") or "").strip())
+        if not _official_url(station_id, href) or href in seen or href == page_url:
+            continue
+        seen.add(href)
+        text = a.get_text(" ", strip=True)
+        haystack = f"{text} {href}".lower()
+        score = 0
+        if any(k in haystack for k in ("メッセージ", "テーマ", "募集")):
+            score += 50
+        if any(k in haystack for k in ("information", "archive", "entry", "article", "blog", "theme")):
+            score += 25
+        if mmdd in re.sub(r"\D", "", haystack):
+            score += 20
+        if score:
+            scored.append((score, href))
+    scored.sort(reverse=True)
+    return [url for _, url in scored[:3]]
 
 
 def _fetch(session: requests.Session, url: str, timeout: float = 12.0) -> tuple[str, str] | None:
@@ -134,15 +166,13 @@ def enrich_rows(
     extract_theme: Callable[..., str | None],
     extract_message_url: Callable[[str], str | None],
 ) -> dict[str, int]:
-    """Fill missing theme/message URLs from official station pages.
-
-    Priority is intentionally conservative:
-    radiko-extracted themes are never overwritten. Official daily timetable text is
-    tried next, then the program's own official URL. This reduces false positives
-    while still recovering themes omitted from radiko XML.
-    """
-
-    stats = {"daily_pages": 0, "program_pages": 0, "themes_added": 0, "message_urls_added": 0}
+    stats = {
+        "daily_pages": 0,
+        "program_pages": 0,
+        "detail_pages": 0,
+        "themes_added": 0,
+        "message_urls_added": 0,
+    }
     session = requests.Session()
 
     daily_pages: dict[str, tuple[str, str]] = {}
@@ -156,7 +186,6 @@ def enrich_rows(
             daily_pages[station_id] = (_html_to_text(raw), final_url)
             stats["daily_pages"] += 1
 
-    # 1) 日別/週間番組表で番組名の近傍だけを見る。
     for row in rows:
         daily = daily_pages.get(row["station_id"])
         if not daily:
@@ -178,7 +207,6 @@ def enrich_rows(
                 row["message_url"] = message_url
                 stats["message_urls_added"] += 1
 
-    # 2) 番組公式URL。テーマ未取得または投稿先未取得の行だけを並列取得。
     unique_urls: dict[str, list[dict]] = {}
     for row in rows:
         url = row.get("program_url")
@@ -198,6 +226,7 @@ def enrich_rows(
                 fetched_pages[url] = result
                 stats["program_pages"] += 1
 
+    detail_candidates: dict[str, list[dict]] = {}
     for url, associated_rows in unique_urls.items():
         fetched = fetched_pages.get(url)
         if not fetched:
@@ -215,6 +244,39 @@ def enrich_rows(
                     stats["themes_added"] += 1
             if not row.get("message_url") and page_message_url:
                 row["message_url"] = page_message_url
+                stats["message_urls_added"] += 1
+            if not row.get("theme"):
+                for detail_url in _candidate_detail_links(row["station_id"], raw_html, final_url, date_yyyymmdd):
+                    detail_candidates.setdefault(detail_url, []).append(row)
+
+    deep_limit = int(os.environ.get("STATION_DEEP_FETCH_LIMIT", "40"))
+    detail_urls = list(detail_candidates)[:deep_limit]
+    detail_pages: dict[str, tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_fetch, session, url): url for url in detail_urls}
+        for future in as_completed(futures):
+            url = futures[future]
+            result = future.result()
+            if result:
+                detail_pages[url] = result
+                stats["detail_pages"] += 1
+
+    for url, associated_rows in detail_candidates.items():
+        fetched = detail_pages.get(url)
+        if not fetched:
+            continue
+        raw_html, final_url = fetched
+        text = _html_to_text(raw_html)
+        theme = extract_theme(text)
+        message_url = _extract_message_link(raw_html, final_url)
+        for row in associated_rows:
+            if not row.get("theme") and theme:
+                row["theme"] = theme
+                row["theme_source_type"] = "official_detail"
+                row["theme_source_url"] = final_url
+                stats["themes_added"] += 1
+            if not row.get("message_url") and message_url:
+                row["message_url"] = message_url
                 stats["message_urls_added"] += 1
 
     return stats
