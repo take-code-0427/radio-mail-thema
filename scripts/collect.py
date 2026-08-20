@@ -11,6 +11,11 @@ from zoneinfo import ZoneInfo
 import psycopg
 import requests
 
+try:
+    from scripts.station_fetchers import enrich_rows
+except ImportError:  # python scripts/collect.py
+    from station_fetchers import enrich_rows
+
 TOKYO = ZoneInfo("Asia/Tokyo")
 AREA_ID = "JP13"
 TARGET_STATIONS = {
@@ -43,8 +48,8 @@ STRONG_THEME_PATTERNS = [
         re.I,
     ),
     re.compile(
-        r"(?:募集テーマ|お題)\s*(?:は|[＝=:：])\s*[、,\s]*"
-        r"[「『【]?\s*(.+?)(?:[」』】]|$|\n)",
+        r"(?:募集中のメッセージテーマ|募集テーマ|お題)\s*(?:は|[＝=:：])?\s*[、,\s]*"
+        r"[＜<「『【]?\s*(.+?)(?:[＞>」』】]|$|\n)",
         re.I,
     ),
     re.compile(r"(?:本日|今日)?(?:の)?議題\s*(?:は|[＝=:：])\s*[「『【]\s*(.+?)\s*[」』】]", re.I),
@@ -72,7 +77,7 @@ def clean_text(value: str | None) -> str:
 
 
 def normalize_theme(value: str) -> str | None:
-    theme = value.strip(" \t\n、,。．・:：=＝『』「」【】[]\"'")
+    theme = value.strip(" \t\n、,。．・:：=＝『』「」【】[]<>＜＞\"'")
     theme = re.split(r"\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)", theme, maxsplit=1)[0].strip()
     theme = theme.rstrip("♪！!。．、,").strip()
     if not (2 <= len(theme) <= 120):
@@ -94,7 +99,7 @@ def generic_theme_candidate(text: str, match: re.Match[str]) -> str | None:
         return None
 
     tail = text[match.end() : match.end() + 180].lstrip(" \t、,：:")
-    quoted = re.search(r"[「『【]\s*([^」』】\n]{2,120}?)\s*[」』】]", tail)
+    quoted = re.search(r"[「『【＜<]\s*([^」』】＞>\n]{2,120}?)\s*[」』】＞>]", tail)
     if quoted and quoted.start() <= 40:
         return normalize_theme(quoted.group(1))
 
@@ -139,7 +144,7 @@ def parse_radiko_datetime(value: str) -> datetime:
 
 def fetch_programs(date_yyyymmdd: str) -> list[dict]:
     source_url = f"https://radiko.jp/v3/program/date/{date_yyyymmdd}/{AREA_ID}.xml"
-    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.1"})
+    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.4"})
     response.raise_for_status()
     root = ET.fromstring(response.content)
 
@@ -175,6 +180,8 @@ def fetch_programs(date_yyyymmdd: str) -> list[dict]:
                     "program_url": url,
                     "message_url": message_url,
                     "source_url": source_url,
+                    "theme_source_type": "radiko" if theme else None,
+                    "theme_source_url": source_url if theme else None,
                 }
             )
     return rows
@@ -202,22 +209,27 @@ def save(rows: list[dict]) -> None:
                   program_url TEXT,
                   message_url TEXT,
                   source_url TEXT NOT NULL,
+                  theme_source_type TEXT,
+                  theme_source_url TEXT,
                   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                   UNIQUE (broadcast_date, station_id, start_at, program_name)
                 )
                 """
             )
+            # Existing databases created before official-source enrichment.
+            cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_type TEXT")
+            cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_url TEXT")
             for row in rows:
                 cur.execute(
                     """
                     INSERT INTO radio_themes (
                       broadcast_date, station_id, station_name, program_name,
                       start_at, end_at, theme, description, program_url,
-                      message_url, source_url, fetched_at
+                      message_url, source_url, theme_source_type, theme_source_url, fetched_at
                     ) VALUES (
                       %(broadcast_date)s, %(station_id)s, %(station_name)s, %(program_name)s,
                       %(start_at)s, %(end_at)s, %(theme)s, %(description)s, %(program_url)s,
-                      %(message_url)s, %(source_url)s, NOW()
+                      %(message_url)s, %(source_url)s, %(theme_source_type)s, %(theme_source_url)s, NOW()
                     )
                     ON CONFLICT (broadcast_date, station_id, start_at, program_name)
                     DO UPDATE SET
@@ -228,6 +240,8 @@ def save(rows: list[dict]) -> None:
                       program_url = EXCLUDED.program_url,
                       message_url = EXCLUDED.message_url,
                       source_url = EXCLUDED.source_url,
+                      theme_source_type = EXCLUDED.theme_source_type,
+                      theme_source_url = EXCLUDED.theme_source_url,
                       fetched_at = NOW()
                     """,
                     row,
@@ -239,9 +253,16 @@ def main() -> None:
     now = datetime.now(TOKYO)
     date_yyyymmdd = sys.argv[1] if len(sys.argv) > 1 else now.strftime("%Y%m%d")
     rows = fetch_programs(date_yyyymmdd)
+    before = sum(1 for row in rows if row["theme"])
+    stats = enrich_rows(rows, date_yyyymmdd, extract_theme, extract_message_url)
     save(rows)
     themes = sum(1 for row in rows if row["theme"])
-    print(f"saved {len(rows)} programs ({themes} themes) for {date_yyyymmdd}")
+    print(
+        f"saved {len(rows)} programs ({themes} themes; radiko={before}, "
+        f"official_added={stats['themes_added']}) for {date_yyyymmdd}; "
+        f"daily_pages={stats['daily_pages']} program_pages={stats['program_pages']} "
+        f"message_urls_added={stats['message_urls_added']}"
+    )
 
 
 if __name__ == "__main__":
