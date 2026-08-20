@@ -44,6 +44,26 @@ def _best_theme(rows: list[dict]) -> dict | None:
     return candidates[0]
 
 
+def _message_url_score(value: str | None) -> int:
+    if not value:
+        return 0
+    lower = value.lower()
+    if lower.startswith("https://") and any(word in lower for word in ("form", "message", "entry", "contact")):
+        return 30
+    if lower.startswith("https://"):
+        return 20
+    if lower.startswith("mailto:"):
+        return 10
+    return 1
+
+
+def _best_message_url(rows: list[dict]) -> str | None:
+    candidates = [row.get("message_url") for row in rows if row.get("message_url")]
+    if not candidates:
+        return None
+    return max(candidates, key=_message_url_score)
+
+
 def _first_nonempty(rows: list[dict], key: str):
     for row in rows:
         if row.get(key):
@@ -67,12 +87,13 @@ def _merge_descriptions(rows: list[dict], limit: int = 5000) -> str | None:
 def _merge_cluster(rows: list[dict], canonical_name: str) -> dict:
     rows = sorted(rows, key=lambda row: row["start_at"])
     base = dict(rows[0])
-    base["program_name"] = canonical_name
+    # Only rename when multiple consecutive fragments prove this is a split show.
+    base["program_name"] = canonical_name if len(rows) > 1 else rows[0]["program_name"]
     base["start_at"] = min(row["start_at"] for row in rows)
     base["end_at"] = max(row["end_at"] for row in rows)
     base["description"] = _merge_descriptions(rows)
     base["program_url"] = _first_nonempty(rows, "program_url")
-    base["message_url"] = _first_nonempty(rows, "message_url")
+    base["message_url"] = _best_message_url(rows)
     base["source_url"] = _first_nonempty(rows, "source_url") or base.get("source_url")
 
     theme_row = _best_theme(rows)
