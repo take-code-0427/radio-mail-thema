@@ -29,15 +29,16 @@ TARGET_STATIONS = {
     "JORF": "ラジオ日本",
 }
 
-SUBMISSION_HINT_RE = re.compile(
-    r"(?:メッセージ|メール|お便り|投稿|アンケート|ワンコメ|送って|お送り|お寄せ|募集中|募集|参加|フォーム)",
-    re.I,
+GENERIC_SUBMISSION_CONTEXT_RE = re.compile(
+    r"(?:メッセージ|メール|お便り|投稿)(?:.{0,45})(?:募集|募集中|送って|お送り|お寄せ|フォーム)"
+    r"|(?:募集|募集中)(?:.{0,45})(?:メッセージ|メール|お便り|投稿)",
+    re.I | re.S,
 )
 
 STRONG_THEME_PATTERNS = [
     # TOKYO FM: 【募集中のメッセージテーマ】\n＜あの夏がくれたもの＞
     re.compile(
-        r"[【「『]?\s*(?:募集中のメッセージテーマ|募集テーマ|お題)\s*[】」』]?\s*"
+        r"[【「『]?\s*(?:募集中のメッセージテーマ|募集テーマ)\s*[】」』]?\s*"
         r"(?:は|[＝=:：])?\s*[、,\s]*[＜<「『【]\s*(.+?)\s*[＞>」』】]",
         re.I | re.S,
     ),
@@ -56,10 +57,17 @@ STRONG_THEME_PATTERNS = [
         re.I,
     ),
     re.compile(
-        r"(?:募集中のメッセージテーマ|募集テーマ|お題)\s*(?:は|[＝=:：])?\s*[、,\s]*"
+        r"(?:募集中のメッセージテーマ|募集テーマ)\s*(?:は|[＝=:：])?\s*[、,\s]*"
         r"[＜<「『【]?\s*(.+?)(?:[＞>」』】]|$|\n)",
         re.I,
     ),
+    # Generic "お題" is accepted only with a real label delimiter/quote.
+    # This deliberately rejects prose such as "大喜利お題を出題！".
+    re.compile(
+        r"お題\s*(?:は|[＝=:：])\s*[、,\s]*[＜<「『【]?\s*(.+?)(?:[＞>」』】]|$|\n)",
+        re.I,
+    ),
+    re.compile(r"お題\s*[＜<「『【]\s*(.+?)\s*[＞>」』】]", re.I),
     re.compile(r"(?:本日|今日)?(?:の)?議題\s*(?:は|[＝=:：])\s*[「『【]\s*(.+?)\s*[」』】]", re.I),
 ]
 
@@ -92,6 +100,8 @@ def normalize_theme(value: str) -> str | None:
         return None
     if re.search(r"https?://|\S+@\S+", theme, re.I):
         return None
+    if re.match(r"^(?:を|が|に|で)(?:出題|募集|紹介|送)", theme):
+        return None
     return theme
 
 
@@ -100,10 +110,11 @@ def generic_theme_candidate(text: str, match: re.Match[str]) -> str | None:
     if any(word in prefix for word in GENERIC_THEME_EXCLUDED_PREFIXES):
         return None
 
-    # A bare "テーマは" is ambiguous. Only accept it when nearby text clearly
-    # asks listeners to participate or send something.
-    context = text[max(0, match.start() - 220) : min(len(text), match.end() + 520)]
-    if not SUBMISSION_HINT_RE.search(context):
+    # A bare "テーマは" is ambiguous. Accept it only when an explicit listener
+    # submission request is genuinely close to the label, not merely elsewhere
+    # on a program/article page.
+    context = text[max(0, match.start() - 140) : min(len(text), match.end() + 260)]
+    if not GENERIC_SUBMISSION_CONTEXT_RE.search(context):
         return None
 
     tail = text[match.end() : match.end() + 180].lstrip(" \t、,：:")
@@ -152,7 +163,7 @@ def parse_radiko_datetime(value: str) -> datetime:
 
 def fetch_programs(date_yyyymmdd: str) -> list[dict]:
     source_url = f"https://radiko.jp/v3/program/date/{date_yyyymmdd}/{AREA_ID}.xml"
-    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.5"})
+    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.6"})
     response.raise_for_status()
     root = ET.fromstring(response.content)
 
@@ -226,13 +237,9 @@ def save(rows: list[dict]) -> None:
                 )
                 """
             )
-            # Existing databases created before official-source enrichment.
             cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_type TEXT")
             cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_url TEXT")
 
-            # This collector owns the complete daily snapshot for the target stations.
-            # Replacing the snapshot prevents old radiko fragments such as (1)/(2)
-            # from remaining after they have been merged into one continuous row.
             broadcast_date = rows[0]["broadcast_date"]
             station_ids = sorted({row["station_id"] for row in rows})
             cur.execute(
@@ -273,7 +280,7 @@ def main() -> None:
         f"({themes} themes; radiko={before}, official_added={stats['themes_added']}) "
         f"for {date_yyyymmdd}; merged={raw_count - len(rows)} "
         f"daily_pages={stats['daily_pages']} program_pages={stats['program_pages']} "
-        f"message_urls_added={stats['message_urls_added']}"
+        f"detail_pages={stats['detail_pages']} message_urls_added={stats['message_urls_added']}"
     )
 
 
