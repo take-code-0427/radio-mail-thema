@@ -10,11 +10,18 @@ const TARGET_STATIONS = {
   JORF: 'ラジオ日本',
 };
 
-const THEME_PATTERNS = [
-  /(?:(?:今日|本日|けさ|今朝)(?:の)?)?(?:メッセージ|メール|投稿)?テーマ\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
-  /(?:メッセージ|メール)募集\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
-  /(?:お題|募集テーマ)\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)/i,
+const SUBMISSION_HINT_RE = /(?:メッセージ|メール|お便り|投稿|アンケート|ワンコメ|送って|お送り|お寄せ|募集中|募集|参加|フォーム)/i;
+
+const STRONG_THEME_PATTERNS = [
+  /(?:今日|本日)?(?:の)?メールテーマ\s*[＝=]\s*「タネ」\s*は\s*[【「『]\s*(.+?)\s*[】」』]/i,
+  /本日の議題は[^。\n]{0,100}?[【「『]\s*(.+?)\s*[】」』]/i,
+  /(?:(?:今日|本日|けさ|今朝|今週|今夜)(?:の)?)?(?:メッセージ|メール|投稿)テーマ\s*(?:は|[＝=:：])\s*[、,\s]*[「『【]?\s*(.+?)(?:[」』】]|$|\n)/i,
+  /(?:募集テーマ|お題)\s*(?:は|[＝=:：])\s*[、,\s]*[「『【]?\s*(.+?)(?:[」』】]|$|\n)/i,
+  /(?:本日|今日)?(?:の)?議題\s*(?:は|[＝=:：])\s*[「『【]\s*(.+?)\s*[」』】]/i,
 ];
+
+const GENERIC_THEME_LABEL_RE = /(?:(?:今日|本日|けさ|今朝|今週|今夜|月曜(?:日)?|火曜(?:日)?|水曜(?:日)?|木曜(?:日)?|金曜(?:日)?|土曜(?:日)?|日曜(?:日)?)(?:の)?)?テーマ\s*(?:は|[＝=:：])/gi;
+const GENERIC_THEME_EXCLUDED_PREFIXES = ['選曲', '楽曲', '音楽', '特集', 'コーナー', '企画'];
 
 function todayJst() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -25,16 +32,52 @@ function todayJst() {
 function compactDate(date) { return date.replaceAll('-', ''); }
 function clean(value) { return String(value ?? '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim(); }
 function array(value) { return value == null ? [] : Array.isArray(value) ? value : [value]; }
+
+function normalizeTheme(value) {
+  const theme = String(value ?? '')
+    .trim()
+    .replace(/^[\s、,。．・:：=＝『』「」【】\[\]"']+|[\s、,。．・:：=＝『』「」【】\[\]"']+$/g, '')
+    .split(/\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)/)[0]
+    .replace(/[♪！!。．、,]+$/g, '')
+    .trim();
+  if (theme.length < 2 || theme.length > 120) return null;
+  if (/https?:\/\/|\S+@\S+/i.test(theme)) return null;
+  return theme;
+}
+
+function genericThemeCandidate(text, match) {
+  const prefix = text.slice(Math.max(0, match.index - 12), match.index);
+  if (GENERIC_THEME_EXCLUDED_PREFIXES.some(word => prefix.includes(word))) return null;
+
+  const context = text.slice(Math.max(0, match.index - 220), Math.min(text.length, match.index + match[0].length + 520));
+  if (!SUBMISSION_HINT_RE.test(context)) return null;
+
+  const tail = text.slice(match.index + match[0].length, match.index + match[0].length + 180).replace(/^[\s、,：:]+/, '');
+  const quoted = tail.match(/[「『【]\s*([^」』】\n]{2,120}?)\s*[」』】]/);
+  if (quoted && quoted.index <= 40) return normalizeTheme(quoted[1]);
+
+  const raw = tail.split(/\n|[。．！!]/, 1)[0];
+  return normalizeTheme(raw);
+}
+
 function extractTheme(...values) {
   const text = values.filter(Boolean).join('\n');
-  for (const pattern of THEME_PATTERNS) {
+
+  for (const pattern of STRONG_THEME_PATTERNS) {
     const match = text.match(pattern);
     if (!match) continue;
-    const theme = match[1].trim().replace(/^[『「"']|[』」"']$/g, '').split(/\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)/)[0].trim();
-    if (theme.length >= 2 && theme.length <= 180) return theme;
+    const theme = normalizeTheme(match[1]);
+    if (theme) return theme;
+  }
+
+  GENERIC_THEME_LABEL_RE.lastIndex = 0;
+  for (const match of text.matchAll(GENERIC_THEME_LABEL_RE)) {
+    const theme = genericThemeCandidate(text, match);
+    if (theme) return theme;
   }
   return null;
 }
+
 function extractMessageUrl(...values) {
   const text = values.filter(Boolean).join('\n');
   const mailto = text.match(/mailto:([^\s"'<>]+)/i);
