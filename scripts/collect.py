@@ -12,8 +12,10 @@ import psycopg
 import requests
 
 try:
+    from scripts.program_merge import merge_split_programs
     from scripts.station_fetchers import enrich_rows
 except ImportError:  # python scripts/collect.py
+    from program_merge import merge_split_programs
     from station_fetchers import enrich_rows
 
 TOKYO = ZoneInfo("Asia/Tokyo")
@@ -144,7 +146,7 @@ def parse_radiko_datetime(value: str) -> datetime:
 
 def fetch_programs(date_yyyymmdd: str) -> list[dict]:
     source_url = f"https://radiko.jp/v3/program/date/{date_yyyymmdd}/{AREA_ID}.xml"
-    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.4"})
+    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.5"})
     response.raise_for_status()
     root = ET.fromstring(response.content)
 
@@ -191,6 +193,8 @@ def save(rows: list[dict]) -> None:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL is required")
+    if not rows:
+        return
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
@@ -219,6 +223,17 @@ def save(rows: list[dict]) -> None:
             # Existing databases created before official-source enrichment.
             cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_type TEXT")
             cur.execute("ALTER TABLE radio_themes ADD COLUMN IF NOT EXISTS theme_source_url TEXT")
+
+            # This collector owns the complete daily snapshot for the target stations.
+            # Replacing the snapshot prevents old radiko fragments such as (1)/(2)
+            # from remaining after they have been merged into one continuous row.
+            broadcast_date = rows[0]["broadcast_date"]
+            station_ids = sorted({row["station_id"] for row in rows})
+            cur.execute(
+                "DELETE FROM radio_themes WHERE broadcast_date = %s AND station_id = ANY(%s)",
+                (broadcast_date, station_ids),
+            )
+
             for row in rows:
                 cur.execute(
                     """
@@ -231,18 +246,6 @@ def save(rows: list[dict]) -> None:
                       %(start_at)s, %(end_at)s, %(theme)s, %(description)s, %(program_url)s,
                       %(message_url)s, %(source_url)s, %(theme_source_type)s, %(theme_source_url)s, NOW()
                     )
-                    ON CONFLICT (broadcast_date, station_id, start_at, program_name)
-                    DO UPDATE SET
-                      station_name = EXCLUDED.station_name,
-                      end_at = EXCLUDED.end_at,
-                      theme = EXCLUDED.theme,
-                      description = EXCLUDED.description,
-                      program_url = EXCLUDED.program_url,
-                      message_url = EXCLUDED.message_url,
-                      source_url = EXCLUDED.source_url,
-                      theme_source_type = EXCLUDED.theme_source_type,
-                      theme_source_url = EXCLUDED.theme_source_url,
-                      fetched_at = NOW()
                     """,
                     row,
                 )
@@ -253,13 +256,16 @@ def main() -> None:
     now = datetime.now(TOKYO)
     date_yyyymmdd = sys.argv[1] if len(sys.argv) > 1 else now.strftime("%Y%m%d")
     rows = fetch_programs(date_yyyymmdd)
+    raw_count = len(rows)
     before = sum(1 for row in rows if row["theme"])
     stats = enrich_rows(rows, date_yyyymmdd, extract_theme, extract_message_url)
+    rows = merge_split_programs(rows)
     save(rows)
     themes = sum(1 for row in rows if row["theme"])
     print(
-        f"saved {len(rows)} programs ({themes} themes; radiko={before}, "
-        f"official_added={stats['themes_added']}) for {date_yyyymmdd}; "
+        f"saved {len(rows)} logical programs from {raw_count} radiko segments "
+        f"({themes} themes; radiko={before}, official_added={stats['themes_added']}) "
+        f"for {date_yyyymmdd}; merged={raw_count - len(rows)} "
         f"daily_pages={stats['daily_pages']} program_pages={stats['program_pages']} "
         f"message_urls_added={stats['message_urls_added']}"
     )
