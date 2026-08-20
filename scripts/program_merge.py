@@ -22,13 +22,18 @@ def canonical_program_name(value: str) -> str:
         previous = name
         name = re.sub(r"\s*[（(]\s*\d+\s*[）)]\s*$", "", name)
         name = re.sub(r"\s+Part\s*\d+\s*$", "", name, flags=re.I)
+        # Clock-style ranges: 8:00～9:00, 08:00-09:00.
         name = re.sub(
-            r"\s+\d{1,2}[：:]?\d{0,2}\s*時?\s*[～〜~\-]\s*"
-            r"\d{1,2}(?:[：:]?\d{0,2}|時(?:\d{1,2}分)?)?\s*$",
+            r"\s+\d{1,2}[：:]\d{2}\s*[～〜~\-]\s*\d{1,2}[：:]\d{2}\s*$",
             "",
             name,
         )
-        name = re.sub(r"\s+\d{1,2}時\s*[～〜~\-]\s*\d{1,2}時(?:\d{1,2}分)?\s*$", "", name)
+        # Japanese ranges: 8時～9時, 11時30分～13時, 17時13分～17時35分.
+        name = re.sub(
+            r"\s+\d{1,2}時(?:\d{1,2}分)?\s*[～〜~\-]\s*\d{1,2}時(?:\d{1,2}分)?\s*$",
+            "",
+            name,
+        )
     return name.strip() or (value or "").strip()
 
 
