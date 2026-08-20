@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="今日のラジオ番組のメールテーマを一覧で探せるサイト" />
+  <title>ラジオのお題</title>
+  <style>
+    :root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#17181a}button,input{font:inherit}
+    .app{min-height:100vh;padding:16px 20px 28px}.toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px}
+    .brand{font-size:21px;font-weight:800;margin-right:8px}.date{font-size:13px;color:#6b7077;margin-right:4px}.filter{border:1px solid #d4d7dc;background:#fff;color:#17181a;border-radius:8px;padding:7px 11px;font-size:13px;cursor:pointer;min-height:36px}.filter.active{background:#17181a;color:#fff;border-color:#17181a}.search{margin-left:auto;min-width:240px;border:1px solid #d4d7dc;background:#fff;color:#17181a;border-radius:8px;padding:8px 11px;font-size:14px}
+    .table-wrap{overflow:auto;border:1px solid #d8dbe0;background:#fff;max-height:calc(100vh - 105px)}table{border-collapse:collapse;width:100%;min-width:960px;font-size:13px}thead th{position:sticky;top:0;background:#eceef1;z-index:2;text-align:left;padding:8px 10px;border-bottom:1px solid #cfd2d7;white-space:nowrap;font-size:12px;color:#555a61}tbody td{padding:8px 10px;border-bottom:1px solid #eceef1;vertical-align:middle}tbody tr:hover{background:#f7f8fa}.time{width:100px;font-variant-numeric:tabular-nums;white-space:nowrap}.station{width:125px;font-weight:750}.program{width:230px;font-weight:650}.theme{min-width:390px;font-size:14px}.actions{width:125px;white-space:nowrap}.live{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:750;color:#d63b3b}.dot{width:7px;height:7px;border-radius:999px;background:#d63b3b;display:inline-block}.soon{font-size:11px;color:#80651d}.mail{display:inline-block;text-decoration:none;color:#17181a;border:1px solid #cfd2d7;border-radius:6px;padding:5px 8px;font-size:12px;background:#fff}.mail:hover{background:#eceef1}.no-theme{color:#969aa1}.footer{display:flex;justify-content:space-between;gap:12px;margin-top:8px;font-size:12px;color:#767b82}
+    @media(prefers-color-scheme:dark){body{background:#101113;color:#f3f4f6}.date,.footer{color:#9ca3af}.filter,.search{background:#191b1f;color:#f3f4f6;border-color:#35383e}.filter.active{background:#f3f4f6;color:#17181a;border-color:#f3f4f6}.table-wrap{background:#17191c;border-color:#33363b}thead th{background:#202328;color:#b8bec7;border-color:#3a3e44}tbody td{border-color:#282b30}tbody tr:hover{background:#1d2024}.mail{background:#202328;color:#f3f4f6;border-color:#3c4046}.mail:hover{background:#2b2f35}.no-theme{color:#777d86}}
+    @media(max-width:720px){.app{padding:12px}.brand{width:100%}.search{margin-left:0;min-width:100%}.table-wrap{max-height:none}}
+  </style>
+</head>
+<body>
+<main class="app">
+  <div class="toolbar">
+    <div class="brand">ラジオのお題</div>
+    <div class="date" id="today"></div>
+    <button class="filter active" data-station="all" type="button">すべて</button>
+    <button class="filter" data-station="TBS" type="button">TBS</button>
+    <button class="filter" data-station="文化放送" type="button">文化放送</button>
+    <button class="filter" data-station="ニッポン放送" type="button">ニッポン放送</button>
+    <button class="filter" data-station="TOKYO FM" type="button">TOKYO FM</button>
+    <button class="filter" data-station="J-WAVE" type="button">J-WAVE</button>
+    <input class="search" id="theme-search" type="search" placeholder="番組・テーマを検索" aria-label="番組・テーマを検索" />
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>時間</th><th>局</th><th>番組</th><th>今日のメールテーマ</th><th>投稿</th></tr></thead>
+      <tbody id="theme-body">
+        <tr data-station="TOKYO FM"><td class="time"><span class="live"><span class="dot"></span>放送中</span><br>09:00–11:00</td><td class="station">TOKYO FM</td><td class="program">Blue Ocean</td><td class="theme">タクシーのはなし</td><td class="actions"><a class="mail" href="https://www.tfm.co.jp/bo/" target="_blank" rel="noreferrer">番組ページ</a></td></tr>
+        <tr data-station="J-WAVE"><td class="time"><span class="live"><span class="dot"></span>放送中</span><br>09:00–13:00</td><td class="station">J-WAVE</td><td class="program">STEP ONE</td><td class="theme">あなたが最近「なるほど」と思ったこと</td><td class="actions"><a class="mail" href="https://www.j-wave.co.jp/original/stepone/" target="_blank" rel="noreferrer">番組ページ</a></td></tr>
+        <tr data-station="文化放送"><td class="time">11:00–13:00</td><td class="station">文化放送</td><td class="program">くにまる食堂</td><td class="theme">最近ちょっと得した話</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="ニッポン放送"><td class="time">11:30–13:00</td><td class="station">ニッポン放送</td><td class="program">ラジオビバリー昼ズ</td><td class="theme">私の周りのクセが強い人</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="TBS"><td class="time">13:00–15:30</td><td class="station">TBS</td><td class="program">こねくと</td><td class="theme">夏休み、これだけはやっておきたい</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="TOKYO FM"><td class="time">13:00–14:55</td><td class="station">TOKYO FM</td><td class="program">山崎怜奈の誰かに話したかったこと。</td><td class="theme">最近、人に話したくなった出来事</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="文化放送"><td class="time">15:30–17:45</td><td class="station">文化放送</td><td class="program">長野智子アップデート</td><td class="theme">あなたが最近アップデートしたこと</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="TBS"><td class="time">15:30–17:50</td><td class="station">TBS</td><td class="program">荻上チキ・Session</td><td class="theme no-theme">テーマ情報なし</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="J-WAVE"><td class="time">16:00–18:50</td><td class="station">J-WAVE</td><td class="program">GRAND MARQUEE</td><td class="theme">あなたの街の好きな場所</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="ニッポン放送"><td class="time">17:30–20:00</td><td class="station">ニッポン放送</td><td class="program">ショウアップナイター</td><td class="theme no-theme">通常メッセージ募集中</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="TOKYO FM"><td class="time">20:00–21:55</td><td class="station">TOKYO FM</td><td class="program">SCHOOL OF LOCK!</td><td class="theme">この夏、自分を変えたいこと</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+        <tr data-station="TBS"><td class="time">22:00–23:55</td><td class="station">TBS</td><td class="program">アフター6ジャンクション</td><td class="theme">あなたが今おすすめしたいカルチャー</td><td class="actions"><span class="no-theme">準備中</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="footer"><span id="count">12番組を表示</span><span>現在はUIモック。自動取得を順次追加予定。</span></div>
+</main>
+<script>
+  const weekdays=['日','月','火','水','木','金','土'];
+  const now=new Date(); document.getElementById('today').textContent=`${now.getMonth()+1}/${now.getDate()} ${weekdays[now.getDay()]} 今日`;
+  const buttons=[...document.querySelectorAll('.filter')]; const rows=[...document.querySelectorAll('#theme-body tr')]; const search=document.getElementById('theme-search'); const count=document.getElementById('count'); let station='all';
+  function render(){const q=search.value.trim().toLowerCase();let n=0;rows.forEach(row=>{const visible=(station==='all'||row.dataset.station===station)&&(!q||row.textContent.toLowerCase().includes(q));row.hidden=!visible;if(visible)n++;});count.textContent=`${n}番組を表示`;}
+  buttons.forEach(btn=>btn.addEventListener('click',()=>{station=btn.dataset.station;buttons.forEach(b=>b.classList.toggle('active',b===btn));render();})); search.addEventListener('input',render);
+</script>
+</body>
+</html>
