@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
@@ -10,6 +11,11 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+try:
+    from scripts.program_merge import canonical_program_name
+except ImportError:  # python scripts/station_fetchers.py
+    from program_merge import canonical_program_name
 
 
 @dataclass(frozen=True)
@@ -33,14 +39,19 @@ STATION_SOURCES = {
     "JORF": StationSource("JORF", "https://www.jorf.co.jp/timetable.php?date={date}", ("jorf.co.jp", "www.jorf.co.jp")),
 }
 
-USER_AGENT = "radio-mail-thema/0.5 (+https://github.com/take-code-0427/radio-mail-thema)"
+USER_AGENT = "radio-mail-thema/0.6 (+https://github.com/take-code-0427/radio-mail-thema)"
+
+LISTENER_THEME_CONTEXT_RE = re.compile(
+    r"(?:メッセージ|メール|お便り|投稿)(?:テーマ)?(?:.{0,45})(?:募集|募集中|送って|お送り|お寄せ|フォーム)"
+    r"|(?:募集|募集中)(?:.{0,45})(?:メッセージ|メール|お便り|投稿)"
+    r"|(?:メッセージ|メール|投稿)テーマ"
+    r"|募集テーマ|募集中のメッセージテーマ",
+    re.I | re.S,
+)
 
 
 def _base_program_name(value: str) -> str:
-    value = re.sub(r"\s*\(\d+\)\s*$", "", value)
-    value = re.sub(r"\s+Part\s*\d+\s*$", "", value, flags=re.I)
-    value = re.sub(r"\s+\d+時(?:～|〜|-)\d+時.*$", "", value)
-    return value.strip()
+    return canonical_program_name(value)
 
 
 def _norm(value: str) -> str:
@@ -65,7 +76,23 @@ def _html_to_text(raw_html: str) -> str:
     return soup.get_text("\n", strip=True)
 
 
-def _program_window(page_text: str, program_name: str, radius: int = 2200) -> str | None:
+def _looks_like_program_line(line_norm: str, program_norm: str) -> bool:
+    if not line_norm or not program_norm:
+        return False
+    if not (program_norm in line_norm or line_norm in program_norm):
+        return False
+    ratio = min(len(line_norm), len(program_norm)) / max(len(line_norm), len(program_norm))
+    # Do not treat a long paragraph that merely mentions the show as a title boundary.
+    return ratio >= 0.72 and len(line_norm) <= max(len(program_norm) + 18, int(len(program_norm) * 1.5))
+
+
+def _program_window(
+    page_text: str,
+    program_name: str,
+    program_names: list[str] | tuple[str, ...] | None = None,
+    radius: int = 2600,
+) -> str | None:
+    """Extract one program's timetable block without bleeding into neighbours."""
     base = _base_program_name(program_name)
     lines = [line.strip() for line in page_text.splitlines() if line.strip()]
     target = _norm(base)
@@ -76,23 +103,60 @@ def _program_window(page_text: str, program_name: str, radius: int = 2200) -> st
     best_score = 0.0
     for idx, line in enumerate(lines):
         nline = _norm(line)
-        if not nline:
+        if not nline or not (target in nline or nline in target):
             continue
-        if target in nline or nline in target:
-            score = min(len(target), len(nline)) / max(len(target), len(nline))
-            if score > best_score:
-                best_idx, best_score = idx, score
+        score = min(len(target), len(nline)) / max(len(target), len(nline))
+        # Prefer title-like short lines over prose that happens to mention the show.
+        if len(nline) <= max(len(target) + 18, int(len(target) * 1.5)):
+            score += 0.35
+        if score > best_score:
+            best_idx, best_score = idx, score
     if best_idx is None:
         return None
 
-    end = min(len(lines), best_idx + 45)
-    time_heading = re.compile(r"^\d{1,2}:\d{2}\s*[-–ー〜~]\s*\d{1,2}:\d{2}$")
-    for idx in range(best_idx + 2, end):
-        if time_heading.match(lines[idx]):
-            end = idx
+    end = min(len(lines), best_idx + 70)
+    if program_names:
+        other_names = {
+            _norm(_base_program_name(name))
+            for name in program_names
+            if _norm(_base_program_name(name)) and _norm(_base_program_name(name)) != target
+        }
+        for idx in range(best_idx + 1, end):
+            nline = _norm(lines[idx])
+            if any(_looks_like_program_line(nline, other) for other in other_names):
+                end = idx
+                break
+    else:
+        # Backward-compatible fallback for isolated tests/callers.
+        time_heading = re.compile(r"^\d{1,2}:\d{2}\s*[-–ー〜~]\s*\d{1,2}:\d{2}$")
+        for idx in range(best_idx + 2, end):
+            if time_heading.match(lines[idx]):
+                end = idx
+                break
+
+    chunk = "\n".join(lines[best_idx:end])
+    return chunk[:radius] if chunk else None
+
+
+def _theme_has_listener_context(text: str, theme: str) -> bool:
+    """Require listener-submission language near an extracted official-page theme."""
+    if not theme:
+        return False
+    positions: list[int] = []
+    start = 0
+    while True:
+        idx = text.find(theme, start)
+        if idx < 0:
             break
-    chunk = "\n".join(lines[max(0, best_idx - 4) : end])
-    return chunk[:radius]
+        positions.append(idx)
+        start = idx + max(1, len(theme))
+    if not positions:
+        return False
+    for idx in positions:
+        context = text[max(0, idx - 180) : min(len(text), idx + len(theme) + 240)]
+        if LISTENER_THEME_CONTEXT_RE.search(context):
+            return True
+    return False
 
 
 def _extract_message_link(raw_html: str, page_url: str) -> str | None:
@@ -135,13 +199,14 @@ def _candidate_detail_links(station_id: str, raw_html: str, page_url: str, yyyym
         text = a.get_text(" ", strip=True)
         haystack = f"{text} {href}".lower()
         score = 0
-        if any(k in haystack for k in ("メッセージ", "テーマ", "募集")):
+        if any(k in haystack for k in ("メッセージ", "メール", "お便り", "テーマ", "募集")):
             score += 50
         if any(k in haystack for k in ("information", "archive", "entry", "article", "blog", "theme")):
-            score += 25
+            score += 15
         if mmdd in re.sub(r"\D", "", haystack):
-            score += 20
-        if score:
+            score += 25
+        # A generic blog/archive link alone is no longer enough to deep-crawl.
+        if score >= 25:
             scored.append((score, href))
     scored.sort(reverse=True)
     return [url for _, url in scored[:3]]
@@ -160,6 +225,13 @@ def _fetch(session: requests.Session, url: str, timeout: float = 12.0) -> tuple[
         return None
 
 
+def _validated_official_theme(text: str, extract_theme: Callable[..., str | None]) -> str | None:
+    theme = extract_theme(text)
+    if not theme:
+        return None
+    return theme if _theme_has_listener_context(text, theme) else None
+
+
 def enrich_rows(
     rows: list[dict],
     date_yyyymmdd: str,
@@ -174,6 +246,12 @@ def enrich_rows(
         "message_urls_added": 0,
     }
     session = requests.Session()
+
+    station_program_names: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        base = _base_program_name(row.get("program_name") or "")
+        if base and base not in station_program_names[row["station_id"]]:
+            station_program_names[row["station_id"]].append(base)
 
     daily_pages: dict[str, tuple[str, str]] = {}
     for station_id, source in STATION_SOURCES.items():
@@ -191,11 +269,15 @@ def enrich_rows(
         if not daily:
             continue
         page_text, page_url = daily
-        window = _program_window(page_text, row["program_name"])
+        window = _program_window(
+            page_text,
+            row["program_name"],
+            station_program_names.get(row["station_id"]),
+        )
         if not window:
             continue
         if not row.get("theme"):
-            theme = extract_theme(window)
+            theme = _validated_official_theme(window, extract_theme)
             if theme:
                 row["theme"] = theme
                 row["theme_source_type"] = "official_daily"
@@ -236,7 +318,7 @@ def enrich_rows(
         page_message_url = _extract_message_link(raw_html, final_url)
         for row in associated_rows:
             if not row.get("theme"):
-                theme = extract_theme(page_text)
+                theme = _validated_official_theme(page_text, extract_theme)
                 if theme:
                     row["theme"] = theme
                     row["theme_source_type"] = "official_program"
@@ -267,7 +349,7 @@ def enrich_rows(
             continue
         raw_html, final_url = fetched
         text = _html_to_text(raw_html)
-        theme = extract_theme(text)
+        theme = _validated_official_theme(text, extract_theme)
         message_url = _extract_message_link(raw_html, final_url)
         for row in associated_rows:
             if not row.get("theme") and theme:
