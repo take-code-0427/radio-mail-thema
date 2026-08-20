@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+import html
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import psycopg
+import requests
+
+TOKYO = ZoneInfo("Asia/Tokyo")
+AREA_ID = "JP13"
+TARGET_STATIONS = {
+    "TBS": "TBSラジオ",
+    "QRR": "文化放送",
+    "LFR": "ニッポン放送",
+    "FMT": "TOKYO FM",
+    "FMJ": "J-WAVE",
+    "JORF": "ラジオ日本",
+}
+
+THEME_PATTERNS = [
+    re.compile(r"(?:今日|本日)?(?:の)?(?:メッセージ|メール|投稿)?テーマ\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+    re.compile(r"(?:メッセージ|メール)募集\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+    re.compile(r"(?:お題|募集テーマ)\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+]
+
+
+def clean_text(value: str | None) -> str:
+    if not value:
+        return ""
+    value = html.unescape(value)
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = value.replace("\r", "\n")
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n+", "\n", value)
+    return value.strip()
+
+
+def extract_theme(*values: str) -> str | None:
+    text = "\n".join(v for v in values if v)
+    for pattern in THEME_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            theme = match.group(1).strip(" \t\n『』「」\"'")
+            theme = re.split(r"\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)", theme, maxsplit=1)[0].strip()
+            if 2 <= len(theme) <= 180:
+                return theme
+    return None
+
+
+def extract_message_url(raw: str) -> str | None:
+    mailto = re.search(r'href=["\'](mailto:[^"\']+)', raw or "", re.I)
+    if mailto:
+        return mailto.group(1)
+    form = re.search(r'href=["\'](https?://[^"\']+)', raw or "", re.I)
+    if form and any(word in form.group(1).lower() for word in ("message", "mail", "form")):
+        return html.unescape(form.group(1))
+    return None
+
+
+def parse_radiko_datetime(value: str) -> datetime:
+    return datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=TOKYO)
+
+
+def fetch_programs(date_yyyymmdd: str) -> list[dict]:
+    source_url = f"https://radiko.jp/v3/program/date/{date_yyyymmdd}/{AREA_ID}.xml"
+    response = requests.get(source_url, timeout=30, headers={"User-Agent": "radio-mail-thema/0.1"})
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+
+    rows: list[dict] = []
+    for station in root.findall(".//station"):
+        station_id = station.attrib.get("id") or station.findtext("id")
+        if station_id not in TARGET_STATIONS:
+            continue
+        station_name = clean_text(station.findtext("name")) or TARGET_STATIONS[station_id]
+        for prog in station.findall(".//prog"):
+            ft = prog.attrib.get("ft")
+            to = prog.attrib.get("to")
+            if not ft or not to:
+                continue
+            title = clean_text(prog.findtext("title"))
+            desc_raw = prog.findtext("desc") or ""
+            info_raw = prog.findtext("info") or ""
+            desc = clean_text(desc_raw)
+            info = clean_text(info_raw)
+            url = clean_text(prog.findtext("url")) or None
+            theme = extract_theme(title, desc, info)
+            message_url = extract_message_url(info_raw) or extract_message_url(desc_raw)
+            rows.append(
+                {
+                    "broadcast_date": datetime.strptime(date_yyyymmdd, "%Y%m%d").date(),
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "program_name": title or "(番組名なし)",
+                    "start_at": parse_radiko_datetime(ft),
+                    "end_at": parse_radiko_datetime(to),
+                    "theme": theme,
+                    "description": (desc + ("\n" + info if info else ""))[:5000] or None,
+                    "program_url": url,
+                    "message_url": message_url,
+                    "source_url": source_url,
+                }
+            )
+    return rows
+
+
+def save(rows: list[dict]) -> None:
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
+
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS radio_themes (
+                  id BIGSERIAL PRIMARY KEY,
+                  broadcast_date DATE NOT NULL,
+                  station_id TEXT NOT NULL,
+                  station_name TEXT NOT NULL,
+                  program_name TEXT NOT NULL,
+                  start_at TIMESTAMPTZ NOT NULL,
+                  end_at TIMESTAMPTZ NOT NULL,
+                  theme TEXT,
+                  description TEXT,
+                  program_url TEXT,
+                  message_url TEXT,
+                  source_url TEXT NOT NULL,
+                  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE (broadcast_date, station_id, start_at, program_name)
+                )
+                """
+            )
+            for row in rows:
+                cur.execute(
+                    """
+                    INSERT INTO radio_themes (
+                      broadcast_date, station_id, station_name, program_name,
+                      start_at, end_at, theme, description, program_url,
+                      message_url, source_url, fetched_at
+                    ) VALUES (
+                      %(broadcast_date)s, %(station_id)s, %(station_name)s, %(program_name)s,
+                      %(start_at)s, %(end_at)s, %(theme)s, %(description)s, %(program_url)s,
+                      %(message_url)s, %(source_url)s, NOW()
+                    )
+                    ON CONFLICT (broadcast_date, station_id, start_at, program_name)
+                    DO UPDATE SET
+                      station_name = EXCLUDED.station_name,
+                      end_at = EXCLUDED.end_at,
+                      theme = EXCLUDED.theme,
+                      description = EXCLUDED.description,
+                      program_url = EXCLUDED.program_url,
+                      message_url = EXCLUDED.message_url,
+                      source_url = EXCLUDED.source_url,
+                      fetched_at = NOW()
+                    """,
+                    row,
+                )
+        conn.commit()
+
+
+def main() -> None:
+    now = datetime.now(TOKYO)
+    date_yyyymmdd = sys.argv[1] if len(sys.argv) > 1 else now.strftime("%Y%m%d")
+    rows = fetch_programs(date_yyyymmdd)
+    save(rows)
+    themes = sum(1 for row in rows if row["theme"])
+    print(f"saved {len(rows)} programs ({themes} themes) for {date_yyyymmdd}")
+
+
+if __name__ == "__main__":
+    main()
