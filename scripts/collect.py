@@ -33,8 +33,8 @@ STRONG_THEME_PATTERNS = [
         r"(?:今日|本日)?(?:の)?メールテーマ\s*[＝=]\s*「タネ」\s*は\s*[【「『]\s*(.+?)\s*[】」』]",
         re.I,
     ),
-    # Skyrocket Company: 本日の議題は ... 【 ダンスダンスダンス案件〜心踊る瞬間 】
-    re.compile(r"本日の議題は[^。\n]{0,100}?[【「『]\s*(.+?)\s*[】」』]", re.I),
+    # Skyrocket Company: 本日の議題は ...\n【 ダンスダンスダンス案件〜心踊る瞬間 】
+    re.compile(r"本日の議題は[^。]{0,160}?[【「『]\s*(.+?)\s*[】」』]", re.I | re.S),
     # Explicit listener-submission themes.
     re.compile(
         r"(?:(?:今日|本日|けさ|今朝|今週|今夜)(?:の)?)?"
