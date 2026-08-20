@@ -36,6 +36,16 @@ class ProgramMergeTest(unittest.TestCase):
     def test_canonicalizes_hour_range_suffix(self):
         self.assertEqual(canonical_program_name("武田砂鉄 ラジオマガジン 10時～11時"), "武田砂鉄 ラジオマガジン")
 
+    def test_canonicalizes_minute_range_suffix(self):
+        self.assertEqual(
+            canonical_program_name("大竹まこと ゴールデンラジオ！ 11時30分～13時"),
+            "大竹まこと ゴールデンラジオ！",
+        )
+        self.assertEqual(
+            canonical_program_name("長野智子アップデート 17時13分～17時35分"),
+            "長野智子アップデート",
+        )
+
     def test_merges_contiguous_fragments(self):
         rows = [
             row("SWEET!! (1)", "09:00", "10:00", theme="ひき肉", source="radiko", station_id="JORF"),
@@ -48,6 +58,18 @@ class ProgramMergeTest(unittest.TestCase):
         self.assertEqual(merged[0]["start_at"].strftime("%H:%M"), "09:00")
         self.assertEqual(merged[0]["end_at"].strftime("%H:%M"), "11:30")
         self.assertEqual(merged[0]["segment_count"], 3)
+
+    def test_merges_minute_range_fragments(self):
+        rows = [
+            row("大竹まこと ゴールデンラジオ！ 11時30分～13時", "11:30", "13:00", station_id="QRR"),
+            row("大竹まこと ゴールデンラジオ！ 13時～14時", "13:00", "14:00", station_id="QRR"),
+            row("大竹まこと ゴールデンラジオ！ 14時～15時", "14:00", "15:00", station_id="QRR"),
+        ]
+        merged = merge_split_programs(rows)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["program_name"], "大竹まこと ゴールデンラジオ！")
+        self.assertEqual(merged[0]["start_at"].strftime("%H:%M"), "11:30")
+        self.assertEqual(merged[0]["end_at"].strftime("%H:%M"), "15:00")
 
     def test_does_not_merge_same_show_far_apart(self):
         rows = [
