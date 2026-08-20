@@ -23,9 +23,9 @@ TARGET_STATIONS = {
 }
 
 THEME_PATTERNS = [
-    re.compile(r"(?:今日|本日)?(?:の)?(?:メッセージ|メール|投稿)?テーマ\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
-    re.compile(r"(?:メッセージ|メール)募集\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
-    re.compile(r"(?:お題|募集テーマ)\s*[：:]\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+    re.compile(r"(?:(?:今日|本日|けさ|今朝)(?:の)?)?(?:メッセージ|メール|投稿)?テーマ\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+    re.compile(r"(?:メッセージ|メール)募集\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+    re.compile(r"(?:お題|募集テーマ)\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
 ]
 
 
@@ -60,6 +60,9 @@ def extract_message_url(raw: str) -> str | None:
     form = re.search(r'href=["\'](https?://[^"\']+)', raw or "", re.I)
     if form and any(word in form.group(1).lower() for word in ("message", "mail", "form")):
         return html.unescape(form.group(1))
+    email = re.search(r"(?<![\w.-])([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?![\w.-])", raw or "", re.I)
+    if email:
+        return f"mailto:{email.group(1)}"
     return None
 
 
