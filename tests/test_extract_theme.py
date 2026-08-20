@@ -8,6 +8,10 @@ class ExtractThemeTest(unittest.TestCase):
         text = '今日のメッセージテーマは「タクシーのはなし」♪\nメッセージフォームからお送りください。'
         self.assertEqual(extract_theme(text), 'タクシーのはなし')
 
+    def test_tfm_recruiting_message_theme(self):
+        text = '【募集中のメッセージテーマ】\n＜あの夏がくれたもの＞\nメッセージは番組のメッセージフォームから！'
+        self.assertEqual(extract_theme(text), 'あの夏がくれたもの')
+
     def test_tane_format(self):
         text = '◇今日のメールテーマ＝「タネ」は【うちだけ語】\nメールアドレス：ij@1242.com'
         self.assertEqual(extract_theme(text), 'うちだけ語')
