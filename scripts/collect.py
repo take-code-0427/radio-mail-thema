@@ -22,11 +22,41 @@ TARGET_STATIONS = {
     "JORF": "ラジオ日本",
 }
 
-THEME_PATTERNS = [
-    re.compile(r"(?:(?:今日|本日|けさ|今朝)(?:の)?)?(?:メッセージ|メール|投稿)?テーマ\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
-    re.compile(r"(?:メッセージ|メール)募集\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
-    re.compile(r"(?:お題|募集テーマ)\s*(?:は|[：:])\s*[「『]?(.+?)(?:[」』]|$|\n)", re.I),
+SUBMISSION_HINT_RE = re.compile(
+    r"(?:メッセージ|メール|お便り|投稿|アンケート|ワンコメ|送って|お送り|お寄せ|募集中|募集|参加|フォーム)",
+    re.I,
+)
+
+STRONG_THEME_PATTERNS = [
+    # 伊集院光のタネ: 今日のメールテーマ＝「タネ」は【うちだけ語】
+    re.compile(
+        r"(?:今日|本日)?(?:の)?メールテーマ\s*[＝=]\s*「タネ」\s*は\s*[【「『]\s*(.+?)\s*[】」』]",
+        re.I,
+    ),
+    # Skyrocket Company: 本日の議題は ... 【 ダンスダンスダンス案件〜心踊る瞬間 】
+    re.compile(r"本日の議題は[^。\n]{0,100}?[【「『]\s*(.+?)\s*[】」』]", re.I),
+    # Explicit listener-submission themes.
+    re.compile(
+        r"(?:(?:今日|本日|けさ|今朝|今週|今夜)(?:の)?)?"
+        r"(?:メッセージ|メール|投稿)テーマ\s*(?:は|[＝=:：])\s*[、,\s]*"
+        r"[「『【]?\s*(.+?)(?:[」』】]|$|\n)",
+        re.I,
+    ),
+    re.compile(
+        r"(?:募集テーマ|お題)\s*(?:は|[＝=:：])\s*[、,\s]*"
+        r"[「『【]?\s*(.+?)(?:[」』】]|$|\n)",
+        re.I,
+    ),
+    re.compile(r"(?:本日|今日)?(?:の)?議題\s*(?:は|[＝=:：])\s*[「『【]\s*(.+?)\s*[」』】]", re.I),
 ]
+
+GENERIC_THEME_LABEL_RE = re.compile(
+    r"(?:(?:今日|本日|けさ|今朝|今週|今夜|月曜(?:日)?|火曜(?:日)?|水曜(?:日)?|木曜(?:日)?|金曜(?:日)?|土曜(?:日)?|日曜(?:日)?)(?:の)?)?"
+    r"テーマ\s*(?:は|[＝=:：])",
+    re.I,
+)
+
+GENERIC_THEME_EXCLUDED_PREFIXES = ("選曲", "楽曲", "音楽", "特集", "コーナー", "企画")
 
 
 def clean_text(value: str | None) -> str:
@@ -41,15 +71,52 @@ def clean_text(value: str | None) -> str:
     return value.strip()
 
 
+def normalize_theme(value: str) -> str | None:
+    theme = value.strip(" \t\n、,。．・:：=＝『』「」【】[]\"'")
+    theme = re.split(r"\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)", theme, maxsplit=1)[0].strip()
+    theme = theme.rstrip("♪！!。．、,").strip()
+    if not (2 <= len(theme) <= 120):
+        return None
+    if re.search(r"https?://|\S+@\S+", theme, re.I):
+        return None
+    return theme
+
+
+def generic_theme_candidate(text: str, match: re.Match[str]) -> str | None:
+    prefix = text[max(0, match.start() - 12) : match.start()]
+    if any(word in prefix for word in GENERIC_THEME_EXCLUDED_PREFIXES):
+        return None
+
+    # A bare "テーマは" is ambiguous. Only accept it when nearby text clearly
+    # asks listeners to participate or send something.
+    context = text[max(0, match.start() - 220) : min(len(text), match.end() + 520)]
+    if not SUBMISSION_HINT_RE.search(context):
+        return None
+
+    tail = text[match.end() : match.end() + 180].lstrip(" \t、,：:")
+    quoted = re.search(r"[「『【]\s*([^」』】\n]{2,120}?)\s*[」』】]", tail)
+    if quoted and quoted.start() <= 40:
+        return normalize_theme(quoted.group(1))
+
+    raw = re.split(r"\n|[。．！!]", tail, maxsplit=1)[0]
+    return normalize_theme(raw)
+
+
 def extract_theme(*values: str) -> str | None:
     text = "\n".join(v for v in values if v)
-    for pattern in THEME_PATTERNS:
+
+    for pattern in STRONG_THEME_PATTERNS:
         match = pattern.search(text)
         if match:
-            theme = match.group(1).strip(" \t\n『』「」\"'")
-            theme = re.split(r"\n|(?:メール|メッセージ|投稿)(?:は|を|で|まで)", theme, maxsplit=1)[0].strip()
-            if 2 <= len(theme) <= 180:
+            theme = normalize_theme(match.group(1))
+            if theme:
                 return theme
+
+    for match in GENERIC_THEME_LABEL_RE.finditer(text):
+        theme = generic_theme_candidate(text, match)
+        if theme:
+            return theme
+
     return None
 
 
