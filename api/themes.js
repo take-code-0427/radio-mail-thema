@@ -33,6 +33,8 @@ export default async function handler(req, res) {
         theme,
         program_url,
         message_url,
+        theme_source_type,
+        theme_source_url,
         fetched_at
       FROM radio_themes
       WHERE broadcast_date = ${date}
