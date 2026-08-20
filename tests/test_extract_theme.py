@@ -45,6 +45,26 @@ class ExtractThemeTest(unittest.TestCase):
         text = '「今のJAZZは面白い」をテーマにジャズのスタンダードナンバーを紹介します。'
         self.assertIsNone(extract_theme(text))
 
+    def test_distant_mail_form_does_not_validate_editorial_theme(self):
+        text = (
+            '今日のテーマは「ひかりさんと検察腐敗」。ニュースを解説します。'
+            + '番組内容の説明です。' * 35
+            + '番組メールフォーム：https://example.com/form'
+        )
+        self.assertIsNone(extract_theme(text))
+
+    def test_ogiri_prompt_is_not_a_mail_theme(self):
+        text = (
+            '●「爆裂！M!LK大喜利！」 M!LKに関する大喜利お題を出題！'
+            '皆さんからの回答をお待ちしています！ 回答の件名は【大喜利】でお願いします！ '
+            'また、大喜利のお題も募集しています！ メールは reco@joqr.net まで！'
+        )
+        self.assertIsNone(extract_theme(text))
+
+    def test_explicit_odai_label_is_supported(self):
+        text = '今日のお題は「夏休みにやりたいこと」\nメールで募集中です。'
+        self.assertEqual(extract_theme(text), '夏休みにやりたいこと')
+
 
 if __name__ == '__main__':
     unittest.main()
