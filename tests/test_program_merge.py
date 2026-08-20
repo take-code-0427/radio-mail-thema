@@ -8,7 +8,7 @@ from scripts.program_merge import canonical_program_name, merge_split_programs
 TOKYO = ZoneInfo("Asia/Tokyo")
 
 
-def row(name, start, end, *, theme=None, source=None, station_id="TBS"):
+def row(name, start, end, *, theme=None, source=None, station_id="TBS", message_url=None):
     return {
         "broadcast_date": datetime(2026, 8, 20, tzinfo=TOKYO).date(),
         "station_id": station_id,
@@ -19,7 +19,7 @@ def row(name, start, end, *, theme=None, source=None, station_id="TBS"):
         "theme": theme,
         "description": name,
         "program_url": None,
-        "message_url": None,
+        "message_url": message_url,
         "source_url": "https://radiko.jp/example.xml",
         "theme_source_type": source,
         "theme_source_url": "https://example.com/theme" if theme else None,
@@ -56,6 +56,8 @@ class ProgramMergeTest(unittest.TestCase):
         ]
         merged = merge_split_programs(rows)
         self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0]["program_name"], "番組 (1)")
+        self.assertEqual(merged[1]["program_name"], "番組 (2)")
 
     def test_prefers_official_theme_over_radiko(self):
         rows = [
@@ -65,6 +67,14 @@ class ProgramMergeTest(unittest.TestCase):
         merged = merge_split_programs(rows)
         self.assertEqual(merged[0]["theme"], "公式テーマ")
         self.assertEqual(merged[0]["theme_source_type"], "official_program")
+
+    def test_prefers_web_form_over_mailto(self):
+        rows = [
+            row("番組 (1)", "09:00", "10:00", message_url="mailto:test@example.com"),
+            row("番組 (2)", "10:00", "11:00", message_url="https://example.com/message/form"),
+        ]
+        merged = merge_split_programs(rows)
+        self.assertEqual(merged[0]["message_url"], "https://example.com/message/form")
 
 
 if __name__ == "__main__":
